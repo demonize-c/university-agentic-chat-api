@@ -1,0 +1,1 @@
+from .docs_router import router as docs_router
