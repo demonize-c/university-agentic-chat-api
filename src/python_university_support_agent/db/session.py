@@ -5,20 +5,21 @@ from ..config import settings
 
 DATABASE_URL = (
     f"mysql+pymysql://"
-    f"{settings.db_user}:{settings.db_password}"
-    f"@{settings.db_host}:{settings.db_port}"
-    f"/{settings.db_name}"
+    f"{settings.database_user}:{settings.database_password}"
+    f"@{settings.database_host}:{settings.database_port}"
+    f"/{settings.database_name}"
 )
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-sessionLocal = sessionmaker( bind=engine, autoflush=False, autocommit=False)
-Base = declarative_base();
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+sessionLocal = SessionLocal  # backward compatibility alias
+Base = declarative_base()
+
 
 def get_db():
-    db = sessionLocal()
+    db = SessionLocal()
     try:
         yield db
-    except:
+    finally:
         db.close()
 
-      

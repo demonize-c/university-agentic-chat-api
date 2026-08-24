@@ -7,7 +7,7 @@ def get_docs():
     return "Docs Page"
 
 @router.post("/upload")
-def get_docs():
-    
-    # return "Docs Page"
+def upload_docs():
+    return {"message": "Upload endpoint"}
+
 
