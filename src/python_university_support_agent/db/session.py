@@ -9,4 +9,16 @@ DATABASE_URL = (
     f"@{settings.db_host}:{settings.db_port}"
     f"/{settings.db_name}"
 )
-engine = create_engine()
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+sessionLocal = sessionmaker( bind=engine, autoflush=False, autocommit=False)
+Base = declarative_base();
+
+def get_db():
+    db = sessionLocal()
+    try:
+        yield db
+    except:
+        db.close()
+
+      

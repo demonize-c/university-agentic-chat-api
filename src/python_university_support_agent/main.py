@@ -1,14 +1,13 @@
-# from fastapi import FastAPI
-# from .routers import docs_router
-# app = FastAPI()
-
-from .config import settings as config
+from fastapi import FastAPI
+from .routers import docs_router
+app = FastAPI()
 
 
 
-# app.include_router( docs_router )
 
-print(config.database_host)
+
+app.include_router( docs_router )
+
 
 
 
