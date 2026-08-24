@@ -1,1 +1,1 @@
-from .document import DocumentCreate
+from .document import DocumentCreate, DocumentResponse
