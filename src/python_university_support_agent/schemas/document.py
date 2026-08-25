@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Dict, Optional, Any
 from datetime import datetime
-
+from .base_schema import PaginatedResponse
 
 class DocumentResponse(BaseModel):
     id: int
@@ -23,4 +23,14 @@ class DocumentCreate(BaseModel):
     filename: str
     extension: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
-    embedded: int = 0
+    embedded: int = 0
+
+
+# class DocumentListResponse( BaseModel ):
+#       data: list[DocumentResponse]
+#       page: int
+#       page_size: int
+#       q_text: str | None = None
+#       total_pages: int
+#       total_result: int
+DocumentListResponse = PaginatedResponse[  DocumentResponse  ]

@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from ..schemas import DocumentCreate, DocumentResponse
 from fastapi import Form, File, UploadFile, HTTPException
 from typing import Annotated
 import json
 from ..utils import extract_file
-from ..crud import create_document
+from ..crud import get_documents, create_document
 from sqlalchemy.orm import Session
 from ..db import get_db
 
@@ -15,8 +15,13 @@ ALLOWED_EXTENSION = [".pdf",".docx",".txt"]
 
 
 @router.get("/")
-def get_docs():
-    return "Docs Page"
+async def  get_docs(
+    page: int = Query(1, gt= 0),
+    page_size: int = Query(10, gt=0, le= 25),
+    q_text: str = None,
+    db = Depends(get_db)
+):
+    return await get_documents( db= db,page= page, page_size= page_size, q_text= q_text)
 
 @router.post("/upload", response_model = DocumentResponse)
 async def upload_docs(

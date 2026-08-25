@@ -1,1 +1,1 @@
-from .document import create_document
+from .document import get_documents, create_document
