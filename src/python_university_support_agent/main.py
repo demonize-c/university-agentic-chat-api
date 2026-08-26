@@ -1,12 +1,45 @@
 from fastapi import FastAPI
 from .routers import docs_router
-app = FastAPI()
+from contextlib import asynccontextmanager
+from arq import create_pool
+from arq.connections import RedisSettings
+from .config import settings
+from .logger import get_logger
+
+
+app_logger = get_logger("APP")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        app.state.redis = await create_pool(RedisSettings(
+            host = settings.redis_host,
+            port = int(settings.redis_port)
+        ))
+        await app.state.redis.ping()
+        app_logger.info(f"Redis connected on host: {settings.redis_host} | port: {settings.redis_port}")
+        yield
+    except Exception:
+        app_logger.exception(
+            "Redis connection failed | host=%s | port=%s",
+            settings.redis_host,
+            settings.redis_port,
+        )
+        raise
+
+    finally:
+        if app.state.redis:
+            await app.state.redis.close()
+
+            app_logger.info(
+                "Redis connection closed"
+            )
 
 
 
-
-
+app = FastAPI(lifespan=lifespan)
 app.include_router( docs_router )
+
 
 
 
