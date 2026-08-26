@@ -7,7 +7,13 @@ class Settings(BaseSettings):
     database_user: str
     database_password: str
     database_name: str
+
+    redis_host: str
+    redis_port: str
+
+    
     hf_token: str
+    
 
     model_config = SettingsConfigDict(
         env_file=".env",
