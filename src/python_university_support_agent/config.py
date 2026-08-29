@@ -1,5 +1,8 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
 
+BASE_DIR = Path(__file__).resolve().parent
+STORAGE_DIR: Path = BASE_DIR / "storage"
 
 class Settings(BaseSettings):
     database_host: str
@@ -13,7 +16,9 @@ class Settings(BaseSettings):
 
     
     hf_token: str
-    
+
+
+    storage_dir: Path = STORAGE_DIR
 
     model_config = SettingsConfigDict(
         env_file=".env",

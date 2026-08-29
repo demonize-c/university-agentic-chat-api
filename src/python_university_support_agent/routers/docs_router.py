@@ -3,7 +3,7 @@ from ..schemas import DocumentCreate, DocumentResponse
 from fastapi import Form, File, UploadFile, HTTPException
 from typing import Annotated
 import json
-from ..utils import extract_file
+from ..utils import extract_file, save_file
 from ..crud import get_documents, create_document
 from sqlalchemy.orm import Session
 from ..db import get_db
@@ -24,6 +24,8 @@ async def  get_docs(
 ):
     return await get_documents( db= db,page= page, page_size= page_size, q_text= q_text)
 
+
+
 @router.post("/upload", response_model = str)
 async def upload_docs(
    metadata: Annotated[str,Form(...)],
@@ -31,19 +33,30 @@ async def upload_docs(
    request: Request,
    db: Session = Depends(get_db),
 ) -> str :
-    redis  = request.app.state.redis
-    if redis:
-        job = await redis.enqueue_job(
-                    "create_embedd",
-                     123,
-                     _queue_name = "embedd_docs_queue"
-                )
-        loggger.info("create doc embedd job is scheduled.")
-        
-    else:
-        loggger.info("Job not scheduled. Redis not configured.")
 
-    return "ok"
+    upload_file_path = save_file( file = file, dir = "documents")
+
+    return upload_file_path
+# @router.post("/upload", response_model = str)
+# async def upload_docs(
+#    metadata: Annotated[str,Form(...)],
+#    file: Annotated[UploadFile, File(...)],
+#    request: Request,
+#    db: Session = Depends(get_db),
+# ) -> str :
+#     redis  = request.app.state.redis
+#     if redis:
+#         job = await redis.enqueue_job(
+#                     "create_embedd",
+#                      123,
+#                      _queue_name = "embedd_docs_queue"
+#                 )
+#         loggger.info("create doc embedd job is scheduled.")
+        
+#     else:
+#         loggger.info("Job not scheduled. Redis not configured.")
+
+#     return "ok"
 
 
         
