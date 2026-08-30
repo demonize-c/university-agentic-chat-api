@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import select, func
-from ..schemas import PaginationMeta, DocumentResponse, DocumentListResponse, DocumentCreate
+from ..schemas import PaginationMeta, DocumentResponse, DocumentListResponse, DocumentCreate, APIResponse
 from ..models  import Document
 from math import ceil
 
@@ -10,7 +10,7 @@ def create_document(db: Session, doc_in: DocumentCreate) -> DocumentResponse:
         if not ext and "." in doc_in.filename:
             ext = doc_in.filename.rsplit(".", 1)[-1]
 
-        db_doc = Document(
+        doc = Document(
             title=doc_in.title,
             content=doc_in.content,
             filename=doc_in.filename,
@@ -19,10 +19,10 @@ def create_document(db: Session, doc_in: DocumentCreate) -> DocumentResponse:
             embedded=doc_in.embedded,
         )
 
-        db.add(db_doc)
+        db.add(doc)
         db.commit()
-        db.refresh(db_doc)
-        return db_doc
+        db.refresh(doc)
+        return doc
 
 
 async def get_documents(
