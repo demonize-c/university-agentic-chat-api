@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     
     hf_token: str
 
+    base_dir:Path = BASE_DIR
 
     storage_dir: Path = STORAGE_DIR
 

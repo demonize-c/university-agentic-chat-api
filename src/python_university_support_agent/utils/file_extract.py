@@ -4,6 +4,7 @@ from docx import Document
 from fastapi import UploadFile
 from io import BytesIO
 
+
 async def extract_file(file: UploadFile ) -> str:
 
     content = await file.read()
