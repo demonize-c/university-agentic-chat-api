@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from langchain_huggingface import HuggingFaceEndpointEmbeddings
 
 
+
 load_dotenv()
 
 def get_embeddings():
