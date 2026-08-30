@@ -18,4 +18,6 @@ croma_db/
 
 # Data storage & PDF files
 src/python_university_support_agent/data/*.pdf
+src/python_university_support_agent/storage/documents/*
+!src/python_university_support_agent/storage/documents/.gitkeep
 
