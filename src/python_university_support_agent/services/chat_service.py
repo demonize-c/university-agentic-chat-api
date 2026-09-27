@@ -13,7 +13,14 @@ from python_university_support_agent.schemas import ChatSourceItem, ChatMessageR
 from python_university_support_agent.config import settings
 from python_university_support_agent.logger import get_logger
 
+import logging
+
 logger = get_logger("Chat Service")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("google_genai").setLevel(logging.ERROR)
+logging.getLogger("google_genai.models").setLevel(logging.ERROR)
+
+
 
 embeddings = get_embeddings()
 vector_store = get_vector_store(embeddings)
@@ -28,6 +35,7 @@ def verify_and_filter_resources(
     Strips raw formatting artifacts and ensures resource relevance.
     Returns a list of tuples: (Document, cleaned_content_text).
     """
+    logger.info("Executing Function: verify_and_filter_resources() | Candidate Chunks=%d | Target File=%s", len(raw_results), target_filename)
     verified_resources: List[Tuple[Document, str]] = []
     seen_contents = set()
 
@@ -54,80 +62,112 @@ def verify_and_filter_resources(
         seen_contents.add(content_hash)
         verified_resources.append((doc, cleaned_text))
 
+    logger.info("Function: verify_and_filter_resources() Complete | Verified Chunks=%d", len(verified_resources))
     return verified_resources
 
 
-def synthesize_verified_reply(query: str, verified_resources: List[Tuple[Document, str]]) -> str:
+def is_valid_api_key(key: Optional[str]) -> bool:
+    """Checks if an API key is present and non-dummy."""
+    if not key or not key.strip():
+        return False
+    k = key.strip().lower()
+    if "your_" in k or "placeholder" in k or k in ("none", "null", "undefined"):
+        return False
+    return len(k) > 5
+
+
+def synthesize_verified_reply(
+    query: str,
+    verified_resources: List[Tuple[Document, str]],
+    model_id: Optional[str] = None
+) -> str:
     """
     Synthesizes a response from verified resources without showing raw chunks or direct doc dumps.
+    Uses Hugging Face models (or rule-based fallback).
     """
+    logger.info("Executing Function: synthesize_verified_reply() | Verified Resources Count=%d | Model Config='%s'", len(verified_resources), model_id or settings.chat_model_id)
+
     if not verified_resources:
+        logger.info("Function: synthesize_verified_reply() | No verified resources found.")
         return "No verified information matching your request was found in the document repository."
 
-    # Combine cleaned facts for synthesis
+    target_model = model_id or settings.chat_model_id
     verified_facts = [cleaned for _, cleaned in verified_resources]
+    context_str = "\n".join(f"- {fact}" for fact in verified_facts[:3])
 
-    # Attempt LLM synthesis if HF_TOKEN is available
+    system_prompt = (
+        "You are a helpful assistant. Explain the answer to the user in simple, clear, everyday language that is very easy for a human to read.\n"
+        "Keep your response to 1 or 2 simple, direct sentences. Avoid complex jargon, stiff phrasing, or verbatim document chunk dumps."
+    )
+    user_prompt = f"Verified Facts:\n{context_str}\n\nUser Question: {query}"
+
+    # Hugging Face Models Synthesis
     hf_token = os.getenv("HF_TOKEN") or settings.hf_token
-    if hf_token and hf_token.strip():
+    if is_valid_api_key(hf_token):
+        hf_repo_id = target_model if "/" in target_model else "meta-llama/Llama-3.2-3B-Instruct"
         try:
             from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
             from langchain_core.messages import SystemMessage, HumanMessage
 
             llm = HuggingFaceEndpoint(
-                repo_id="Qwen/Qwen2.5-7B-Instruct",
+                repo_id=hf_repo_id,
                 huggingfacehub_api_token=hf_token.strip(),
-                task="conversational",
-                max_new_tokens=256,
-                temperature=0.2,
+                task="text-generation",
+                max_new_tokens=100,
+                temperature=0.1,
             )
-
             chat_model = ChatHuggingFace(llm=llm)
 
-            context_str = "\n".join(f"- {fact}" for fact in verified_facts[:3])
             messages = [
-                SystemMessage(content=(
-                    "You are a helpful university support assistant. Answer the user question based strictly on the verified facts below.\n"
-                    "Synthesize the answer clearly and concisely in your own words. DO NOT copy or output raw document chunks verbatim. DO NOT dump raw chunk blocks."
-                )),
-                HumanMessage(content=f"Verified Facts:\n{context_str}\n\nUser Question: {query}")
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
             ]
-
             response = chat_model.invoke(messages)
             reply_text = str(response.content).strip()
             if reply_text:
+                logger.info("Reply Processed via Provider: Hugging Face API | Model: %s", hf_repo_id)
                 return reply_text
+            else:
+                logger.warning("Hugging Face LLM returned empty response for model '%s'. Falling back to rule-based synthesizer.", hf_repo_id)
         except Exception as e:
-            logger.warning(f"LLM synthesis failed, falling back to rule-based synthesis: {e}")
+            logger.warning("Hugging Face LLM synthesis failed for model '%s'. Error: %s. Falling back to rule-based synthesizer.", hf_repo_id, e)
+    else:
+        logger.info("HF_TOKEN is missing or not configured. Using rule-based simplified fact synthesizer.")
 
 
-    # Rule-Based Fact Synthesizer (Fallback when LLM is offline/unavailable)
-    # Synthesizes clean structured facts instead of dumping raw chunk blocks
+
+
+    # 4. Human-Readable Simplified Synthesizer (Fallback: 1-2 clean sentences)
+    logger.info("Reply Processed via Fallback Engine: Human-Readable Simplified Fact Synthesizer")
     sentences: List[str] = []
-    for _, text in verified_resources[:3]:
-        # Split into sentences and extract non-redundant meaningful lines
+    for _, text in verified_resources[:2]:
         for sent in re.split(r"(?<=[.!?])\s+", text):
-            sent_clean = sent.strip()
-            if len(sent_clean) > 20 and sent_clean not in sentences:
+            sent_clean = re.sub(r"^[^\w]+", "", sent.strip()) # Strip leading non-alphanumeric bullets/numbers
+            if len(sent_clean) > 15 and sent_clean not in sentences:
                 sentences.append(sent_clean)
-            if len(sentences) >= 4:
+            if len(sentences) >= 2:
                 break
-        if len(sentences) >= 4:
+        if len(sentences) >= 2:
             break
 
     if not sentences:
-        return "Verified information was retrieved from the document, but could not be synthesized into a clear answer."
+        return "No verified concise answer could be found in the document."
 
-    bullet_points = "\n".join(f"- {s}" for s in sentences)
-    return f"Based on verified resources in the documentation:\n\n{bullet_points}"
+    # Format into easy human-readable sentences
+    final_reply = " ".join(sentences[:2])
+    # Capitalize first character cleanly if needed
+    if final_reply:
+        final_reply = final_reply[0].upper() + final_reply[1:]
 
+    return final_reply
 
 
 async def process_chat_request(
     query: str,
     doc_id: Optional[int],
     k: int,
-    db: AsyncSession
+    db: AsyncSession,
+    model_id: Optional[str] = None
 ) -> ChatMessageResponse:
     """
     Main chat processor:
@@ -137,6 +177,10 @@ async def process_chat_request(
     4. Synthesizes answer (no direct chunk dumps).
     5. Returns structured response with sources.
     """
+    active_model = model_id or settings.chat_model_id
+    search_scope = f"Document #{doc_id}" if doc_id is not None else "All Documents"
+    logger.info("Service: process_chat_request() | query='%s' | Search Scope=%s | Model='%s'", query, search_scope, active_model)
+
     target_filename = None
     if doc_id is not None:
         doc = await get_document_by_id(db, doc_id)
@@ -151,7 +195,7 @@ async def process_chat_request(
     verified_items = verify_and_filter_resources(raw_results, target_filename=target_filename)
 
     # Synthesize clean reply without dumping raw chunks
-    reply = synthesize_verified_reply(query, verified_items)
+    reply = synthesize_verified_reply(query, verified_items, model_id=model_id)
 
     # Build traceable sources list
     sources: List[ChatSourceItem] = []
@@ -167,8 +211,11 @@ async def process_chat_request(
             )
         )
 
+    logger.info("Service: process_chat_request() Completed Successfully | Sources Attached=%d", len(sources))
     return ChatMessageResponse(
         query=query,
         reply=reply,
         sources=sources
     )
+
+

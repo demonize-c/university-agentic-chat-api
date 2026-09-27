@@ -15,9 +15,15 @@ class Settings(BaseSettings):
     redis_port: str = "6379"
 
     hf_token: str = ""
+    chat_model_id: str = "Qwen/Qwen2.5-Coder-7B-Instruct"
+
+
+
+
 
     base_dir: Path = BASE_DIR
     storage_dir: Path = STORAGE_DIR
+
 
     model_config = SettingsConfigDict(
         env_file=".env",
