@@ -17,7 +17,8 @@ import asyncio
 from python_university_support_agent.services import start_job, complete_job, update_progress, fail_job
 
 
-BATCH_SIZE = 10
+PAGE_BATCH_SIZE = 5   # Read pages in batches of 5
+EMBED_BATCH_SIZE = 10 # Send chunks to vector store in batches of 10
 
 logger = get_logger("Embedd Job")
 
@@ -32,25 +33,25 @@ embeddings = get_embeddings()
 vector_store = get_vector_store( embeddings )
 
 
+async def get_page_batch_documents(
+    reader: pypdf.PdfReader,
+    filename: str,
+    start_page: int,
+    end_page: int,
+    previous_overlap_doc: Document | None = None
+) -> list[Document]:
+    batch_docs = []
+    if previous_overlap_doc is not None:
+        batch_docs.append(previous_overlap_doc)
 
-async def get_documents_from_file(file_abs_path: Path | str, filename: str) -> list[Document]:
-    file_path = file_abs_path if isinstance(file_abs_path, Path) else Path(file_abs_path)
-    ext = file_path.suffix
-    docs = list()
-
-    if ext == ".pdf":
-        reader = pypdf.PdfReader(file_path)
-        for i, page in enumerate(reader.pages):
-            page_content = page.extract_text()
-            docs.append(Document(page_content=page_content or "", metadata = { "source": filename, "page": i}))
-    elif ext == ".docx":
-        docx = DocxDocument( BytesIO( file_path.read_bytes() ))
-        for index, paragraph in enumerate(docx.paragraphs, start=1):
-            docs.append(Document(page_content=paragraph.text.strip() or "", metadata = { "source": filename, "paragraph": index}))
-    elif ext == ".txt":
-        content = file_path.read_text(encoding="utf8")
-        docs.append(Document(page_content= content, metadata= {"source": filename, "page": 1}))
-    return docs
+    for i in range(start_page, end_page):
+        page_text = reader.pages[i].extract_text() or ""
+        if page_text.strip():
+            batch_docs.append(Document(
+                page_content=page_text,
+                metadata={"source": filename, "page": i + 1}
+            ))
+    return batch_docs
 
 
 @retry(
@@ -83,36 +84,65 @@ async def create_embedd(ctx, job_id):
 
             filename = doc.filename
             file_abs_path = Path.joinpath(settings.storage_dir, filename)
+            file_path = Path(file_abs_path)
 
-            docs: list[Document] = await get_documents_from_file(file_abs_path=file_abs_path, filename=filename)
-            logger.info(f"Total {len(docs)} langchain docs will be processed: ")
+            reader = pypdf.PdfReader(file_path)
+            total_pages = len(reader.pages)
+            logger.info(f"Total {total_pages} PDF pages to process")
 
-            all_splits = text_splitter.split_documents(docs)
-            total_docs = len(all_splits)
+            await update_progress(db=db, job_id=job.id, embedded_chunks=0, total_chunks=total_pages)
 
-            await update_progress(db=db, job_id=job.id, embedded_chunks=0, total_chunks=total_docs)
+            total_embedded_chunks = 0
+            previous_overlap_doc = None
 
-            for i in range(0, total_docs, BATCH_SIZE):
-                start = i
-                end = min(start + BATCH_SIZE, total_docs)
-                batch = all_splits[start:end]
-                logger.info(
-                    "Batch processing started | range=%d-%d | total_documents=%d",
-                    start,
-                    end - 1,
-                    total_docs
+            for start_page in range(0, total_pages, PAGE_BATCH_SIZE):
+                end_page = min(start_page + PAGE_BATCH_SIZE, total_pages)
+                logger.info(f"Reading page batch range={start_page + 1}-{end_page} of {total_pages}")
+
+                batch_docs = await get_page_batch_documents(
+                    reader=reader,
+                    filename=filename,
+                    start_page=start_page,
+                    end_page=end_page,
+                    previous_overlap_doc=previous_overlap_doc
                 )
-                await process_batch(batch=batch)
-                await update_progress(db=db, job_id=job.id, embedded_chunks=end)
-                logger.info(
-                    "Batch processing ended | range=%d-%d | total_documents=%d",
-                    start,
-                    end - 1,
-                    total_docs
+
+                if not batch_docs:
+                    continue
+
+                # Split batch docs into correlated chunks
+                splits = text_splitter.split_documents(batch_docs)
+
+                # Save trailing overlap from this batch for the next batch boundary correlation
+                if splits:
+                    last_split = splits[-1]
+                    overlap_text = (
+                        last_split.page_content[-200:]
+                        if len(last_split.page_content) > 200
+                        else last_split.page_content
+                    )
+                    previous_overlap_doc = Document(
+                        page_content=overlap_text,
+                        metadata=last_split.metadata
+                    )
+
+                # Embed chunks in EMBED_BATCH_SIZE batches
+                for i in range(0, len(splits), EMBED_BATCH_SIZE):
+                    embed_batch = splits[i: i + EMBED_BATCH_SIZE]
+                    await process_batch(batch=embed_batch)
+                    total_embedded_chunks += len(embed_batch)
+
+                # Update progress based on completed pages
+                await update_progress(
+                    db=db,
+                    job_id=job.id,
+                    embedded_chunks=end_page,
+                    total_chunks=total_pages
                 )
+                logger.info(f"Page batch {start_page + 1}-{end_page} embedded ({total_embedded_chunks} chunks total)")
 
             await complete_job(db=db, job_id=job.id)
-            logger.info(f"File {filename} embedding has processed successfully")
+            logger.info(f"File {filename} embedding has processed successfully ({total_embedded_chunks} chunks embedded)")
         except Exception as e:
             logger.error(f"Embedding job failed: {e}")
             await fail_job(db=db, job_id=job_id, error=str(e))

@@ -1,10 +1,13 @@
 from fastapi import FastAPI
-from .routers import docs_router
+from .routers import docs_router, chat_router
 from contextlib import asynccontextmanager
 from arq import create_pool
 from arq.connections import RedisSettings
 from .config import settings
 from .logger import get_logger
+
+
+from .db import engine
 
 
 app_logger = get_logger("APP")
@@ -28,17 +31,18 @@ async def lifespan(app: FastAPI):
         raise
 
     finally:
-        if app.state.redis:
+        if getattr(app.state, "redis", None):
             await app.state.redis.close()
+            app_logger.info("Redis connection closed")
+        await engine.dispose()
+        app_logger.info("Database engine connection pool disposed")
 
-            app_logger.info(
-                "Redis connection closed"
-            )
 
 
 
 app = FastAPI(lifespan=lifespan)
 app.include_router( docs_router )
+app.include_router( chat_router )
 
 
 

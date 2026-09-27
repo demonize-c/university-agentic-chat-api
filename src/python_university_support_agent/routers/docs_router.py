@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, Query, Request
-from ..schemas import DocumentCreate, DocumentResponse, APIResponse
-from fastapi import Form, File, UploadFile, HTTPException
+from pathlib import Path
+from fastapi import APIRouter, Depends, Query, Request, Form, File, UploadFile, HTTPException
 from typing import Annotated
 import json
+from ..schemas import DocumentCreate, DocumentUpdate, DocumentResponse, APIResponse
+from ..crud import get_documents, create_document, get_document_by_id, update_document, delete_document
 from ..utils import extract_file, save_file
-from ..crud import get_documents, create_document
+from ..config import settings
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_db
 from ..logger import get_logger
@@ -58,14 +59,17 @@ async def upload_docs(
     file_text_content = "<No content>"
 
     try:
-        upload_filename = await save_file(file, "documents")
-        # Create document without committing yet (commit=False)
+        saved_info = await save_file(file, "documents")
+        parsed_metadata["original_file_path"] = saved_info["original_file_path"]
+        parsed_metadata["original_extension"] = saved_info["original_ext"]
+
+        # Create document with title as original filename, and filename as PDF path
         doc = await create_document(db, DocumentCreate(
-            title     = filename,
+            title     = saved_info["original_title"],
             content   = file_text_content,
-            filename  = upload_filename,
+            filename  = saved_info["pdf_file_path"],
             metadata  = parsed_metadata,
-            extension = ext,
+            extension = ".pdf",
             embedded  = 0
         ), commit=False)
        
@@ -82,14 +86,59 @@ async def upload_docs(
             logger.info("create doc embedd job is scheduled.")
         return APIResponse(data=doc, status_code= 201, message="Success")
     except Exception as e:
-        print(e)
+        logger.error(f"Upload failed: {e}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
-    
-    
 
 
-    
-    
-    
+@router.get("/{doc_id}", response_model=APIResponse[DocumentResponse])
+async def get_doc(doc_id: int, db: AsyncSession = Depends(get_db)):
+    doc = await get_document_by_id(db, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Document with ID {doc_id} not found")
+    return APIResponse(status_code=200, message="Document fetched successfully", data=DocumentResponse.model_validate(doc))
+
+
+@router.patch("/{doc_id}", response_model=APIResponse[DocumentResponse])
+@router.put("/{doc_id}", response_model=APIResponse[DocumentResponse])
+async def update_doc(doc_id: int, doc_in: DocumentUpdate, db: AsyncSession = Depends(get_db)):
+    doc = await update_document(db, doc_id=doc_id, doc_in=doc_in)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Document with ID {doc_id} not found")
+    return APIResponse(status_code=200, message="Document updated successfully", data=DocumentResponse.model_validate(doc))
+
+
+@router.delete("/{doc_id}", response_model=APIResponse[dict])
+async def delete_doc(doc_id: int, db: AsyncSession = Depends(get_db)):
+    doc = await get_document_by_id(db, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Document with ID {doc_id} not found")
+
+    # Remove vector embeddings from ChromaDB
+    try:
+        from ..retrieval import get_vector_store, get_embeddings
+        vector_store = get_vector_store(get_embeddings())
+        vector_store._collection.delete(where={"source": doc.filename})
+        logger.info(f"Vector embeddings for document {doc.filename} deleted from vector store")
+    except Exception as e:
+        logger.warning(f"Error removing vector embeddings for doc {doc_id}: {e}")
+
+    # Remove stored physical files if present
+    try:
+        pdf_abs_path = settings.storage_dir.joinpath(doc.filename)
+        if pdf_abs_path.exists():
+            pdf_abs_path.unlink()
+
+        if doc.doc_metadata and "original_file_path" in doc.doc_metadata:
+            orig_abs_path = settings.storage_dir.joinpath(doc.doc_metadata["original_file_path"])
+            if orig_abs_path.exists() and orig_abs_path != pdf_abs_path:
+                orig_abs_path.unlink()
+    except Exception as e:
+        logger.warning(f"Error removing physical files for doc {doc_id}: {e}")
+
+    deleted = await delete_document(db, doc_id)
+    if not deleted:
+        raise HTTPException(status_code=500, detail="Failed to delete document record")
+
+    return APIResponse(status_code=200, message="Document deleted successfully", data={"id": doc_id})
 
 
