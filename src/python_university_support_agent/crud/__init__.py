@@ -1,1 +1,1 @@
-from .document import get_documents, create_document
+from .document import get_documents, create_document, get_document_by_id, update_document, delete_document

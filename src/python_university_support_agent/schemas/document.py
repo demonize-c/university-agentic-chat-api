@@ -25,9 +25,8 @@ class DocumentCreate(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     embedded: int = 0
 
-class DocumentUpdate( BaseModel ):
+class DocumentUpdate(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
-    embedded: int = 0
 
 # class DocumentListResponse( BaseModel ):
 #       data: list[DocumentResponse]

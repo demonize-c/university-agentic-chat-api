@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import select, func
-from ..schemas import PaginationMeta, DocumentResponse, DocumentListResponse, DocumentCreate, APIResponse
+from ..schemas import PaginationMeta, DocumentResponse, DocumentListResponse, DocumentCreate, DocumentUpdate, APIResponse
 from ..models  import Document
 from math import ceil
 
@@ -78,9 +78,41 @@ async def get_documents(
         )
     )
 
+async def get_document_by_id(db: AsyncSession, doc_id: int) -> Document | None:
+    result = await db.execute(select(Document).where(Document.id == doc_id))
+    return result.scalar_one_or_none()
 
-    
-    
-      
-      
+
+async def update_document(
+    db: AsyncSession,
+    doc_id: int,
+    doc_in: DocumentUpdate,
+    commit: bool = True
+) -> Document | None:
+    doc = await get_document_by_id(db, doc_id)
+    if not doc:
+        return None
+
+    if doc_in.metadata is not None:
+        doc.doc_metadata = doc_in.metadata
+
+    if commit:
+        await db.commit()
+        await db.refresh(doc)
+    else:
+        await db.flush()
+    return doc
+
+
+async def delete_document(db: AsyncSession, doc_id: int, commit: bool = True) -> bool:
+    doc = await get_document_by_id(db, doc_id)
+    if not doc:
+        return False
+
+    await db.delete(doc)
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
+    return True
 
