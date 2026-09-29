@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql import select, func
-from ..schemas import PaginationMeta, DocumentResponse, DocumentListResponse, DocumentCreate, DocumentUpdate, APIResponse
+from sqlalchemy.sql import select, func, case
+from ..schemas import PaginationMeta, DocumentResponse, DocumentListResponse, DocumentCreate, DocumentUpdate, APIResponse, DocumentAnalytics
 from ..models  import Document
 from math import ceil
 
@@ -14,9 +14,18 @@ async def create_document(db: AsyncSession, doc_in: DocumentCreate, commit: bool
         title=doc_in.title,
         content=doc_in.content,
         filename=doc_in.filename,
+        original_file_path=doc_in.original_file_path,
         extension=ext,
+        file_size=doc_in.file_size,
         doc_metadata=doc_in.metadata,
         embedded=doc_in.embedded,
+        generating_embedding=doc_in.generating_embedding,
+        deleting_embedding=doc_in.deleting_embedding,
+        total_chunks=doc_in.total_chunks,
+        embedd_generation_started=doc_in.embedd_generation_started,
+        embedd_generation_ended=doc_in.embedd_generation_ended,
+        embedd_deletion_started=doc_in.embedd_deletion_started,
+        embedd_deletion_ended=doc_in.embedd_deletion_ended,
     )
 
     db.add(doc)
@@ -34,13 +43,32 @@ async def get_documents(
     page_size: int = 10,
     q_text: str = None
 ) -> DocumentListResponse:
-    count_stmt = select(func.count()).select_from(Document)
+    stats_stmt = select(
+        func.count(Document.id),
+        func.coalesce(func.sum(case((Document.embedded == True, Document.total_chunks), else_=0)), 0),
+        func.coalesce(func.sum(Document.file_size), 0)
+    ).select_from(Document)
     if q_text:
-        count_stmt = count_stmt.where(Document.title.icontains(q_text) | Document.content.icontains(q_text))
+        stats_stmt = stats_stmt.where(Document.title.icontains(q_text) | Document.content.icontains(q_text))
 
-    count_result = await db.execute(count_stmt)
-    total_result = count_result.scalar() or 0
-    total_pages  = ceil(total_result / page_size) if total_result > 0 else 0
+    stats_result = await db.execute(stats_stmt)
+    total_result, total_chunks, total_storage_used = stats_result.one()
+    total_result = total_result or 0
+    total_chunks = int(total_chunks or 0)
+    total_storage_used = int(total_storage_used or 0)
+
+    # Fallback to vector store count if total_chunks in DB is 0
+    if not q_text and total_chunks == 0:
+        try:
+            from ..retrieval import get_vector_store, get_embeddings
+            vector_store = get_vector_store(get_embeddings())
+            chroma_count = vector_store._collection.count()
+            if chroma_count > 0:
+                total_chunks = chroma_count
+        except Exception:
+            pass
+
+    total_pages = ceil(total_result / page_size) if total_result > 0 else 0
 
     if total_pages > 0 and page > total_pages:
         page = total_pages
@@ -58,23 +86,37 @@ async def get_documents(
         title=doc.title,
         content=doc.content.strip()[:300],
         filename=doc.filename,
+        original_file_path=doc.original_file_path,
         extension=doc.extension,
+        file_size=doc.file_size,
         doc_metadata=doc.doc_metadata,
-        embedded=doc.embedded,
+        embedded=bool(doc.embedded),
+        generating_embedding=bool(doc.generating_embedding),
+        deleting_embedding=bool(doc.deleting_embedding),
+        total_chunks=doc.total_chunks or 0,
+        embedd_generation_started=doc.embedd_generation_started,
+        embedd_generation_ended=doc.embedd_generation_ended,
+        embedd_deletion_started=doc.embedd_deletion_started,
+        embedd_deletion_ended=doc.embedd_deletion_ended,
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )
     for doc in result]
 
     return DocumentListResponse(
-        status_code= 200,
+        status_code=200,
         message="Documents fetched successfully.",
-        data = docs,
-        meta = PaginationMeta(
-            total_pages = total_pages,
-            total_result = total_result,
-            page = page,
-            page_size = page_size
+        data=docs,
+        meta=PaginationMeta(
+            total_pages=total_pages,
+            total_result=total_result,
+            page=page,
+            page_size=page_size,
+            q_text=q_text
+        ),
+        analytics=DocumentAnalytics(
+            total_chunks=total_chunks,
+            total_storage_used=total_storage_used
         )
     )
 
@@ -92,6 +134,9 @@ async def update_document(
     doc = await get_document_by_id(db, doc_id)
     if not doc:
         return None
+
+    if doc_in.title is not None:
+        doc.title = doc_in.title
 
     if doc_in.metadata is not None:
         doc.doc_metadata = doc_in.metadata

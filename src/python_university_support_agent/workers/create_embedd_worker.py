@@ -1,10 +1,11 @@
 from arq.connections import RedisSettings
 from ..config import settings
-from ..jobs import create_embedd
+from ..jobs import create_embedd, delete_embedd
 
 class WorkerSettings:
     functions = [
-        create_embedd
+        create_embedd,
+        delete_embedd
     ]
     queue_name     = "embedd_docs_queue"
     redis_settings = RedisSettings( host= settings.redis_host, port = int(settings.redis_port))
