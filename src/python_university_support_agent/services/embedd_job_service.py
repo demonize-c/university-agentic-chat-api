@@ -114,6 +114,12 @@ async def start_job(
 
         job.total_chunks = total_chunks
 
+    # Set generating_embedding flag on parent document when job starts
+    document = await db.get(Document, job.document_id)
+    if document:
+        document.generating_embedding = True
+        document.deleting_embedding = False
+
     if commit:
         await db.commit()
         await db.refresh(job)
@@ -243,6 +249,9 @@ async def complete_job(
         )
 
     document.embedded = True
+    document.generating_embedding = False
+    document.deleting_embedding = False
+    document.embedd_generation_ended = utc_now()
 
     if commit:
         await db.commit()
@@ -270,9 +279,7 @@ async def fail_job(
     job = await get_job(db, job_id)
 
     if job is None:
-        raise ValueError(
-            f"Job {job_id} not found"
-        )
+        return None
 
     if job.status == JobStatus.COMPLETED:
         raise ValueError(
@@ -282,6 +289,13 @@ async def fail_job(
     job.status = JobStatus.FAILED
     job.error_message = error
     job.completed_at = utc_now()
+
+    # Reset processing flag on parent document if exists
+    document = await db.get(Document, job.document_id)
+    if document:
+        document.generating_embedding = False
+        document.deleting_embedding = False
+        document.embedd_generation_ended = utc_now()
 
     if commit:
         await db.commit()

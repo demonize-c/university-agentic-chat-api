@@ -14,7 +14,7 @@ from ..models import Document as DocumentModel
 from ..logger import get_logger
 from tenacity import retry, retry_if_exception_type, wait_exponential, stop_after_attempt
 import asyncio
-from python_university_support_agent.services import start_job, complete_job, update_progress, fail_job
+from python_university_support_agent.services import get_job, start_job, complete_job, update_progress, fail_job
 
 
 PAGE_BATCH_SIZE = 5   # Read pages in batches of 5
@@ -76,6 +76,15 @@ async def create_embedd(ctx, job_id):
     logger = get_logger(f"Job<{job_id}> | Embedd Task")
     async with sessionLocal() as db:
         try:
+            existing_job = await get_job(db, job_id)
+            if not existing_job:
+                logger.warning(f"Job {job_id} not found in database (it may have been deleted). Skipping task.")
+                return
+
+            if not existing_job.document:
+                logger.warning(f"Parent document for Job {job_id} not found (it may have been deleted). Skipping task.")
+                return
+
             job = await start_job(db=db, job_id=job_id)
             doc = job.document
 
@@ -86,66 +95,57 @@ async def create_embedd(ctx, job_id):
             file_abs_path = Path.joinpath(settings.storage_dir, filename)
             file_path = Path(file_abs_path)
 
+            if not file_path.exists():
+                error_msg = f"File not found on disk: {file_abs_path}"
+                logger.error(error_msg)
+                await fail_job(db=db, job_id=job_id, error=error_msg)
+                return
+
             reader = pypdf.PdfReader(file_path)
             total_pages = len(reader.pages)
-            logger.info(f"Total {total_pages} PDF pages to process")
+            logger.info(f"Total {total_pages} PDF pages to read")
 
-            await update_progress(db=db, job_id=job.id, embedded_chunks=0, total_chunks=total_pages)
+            all_page_docs = []
+            for i, page in enumerate(reader.pages):
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    all_page_docs.append(Document(
+                        page_content=page_text,
+                        metadata={"source": filename, "page": i + 1}
+                    ))
+
+            # Split document into chunks
+            all_splits = text_splitter.split_documents(all_page_docs)
+            total_chunks_count = len(all_splits)
+            logger.info(f"Generated {total_chunks_count} total chunks from {total_pages} pages")
+
+            # Update document total_chunks field
+            doc.total_chunks = total_chunks_count
+            await update_progress(db=db, job_id=job.id, embedded_chunks=0, total_chunks=total_chunks_count)
+            await db.commit()
 
             total_embedded_chunks = 0
-            previous_overlap_doc = None
+            for i in range(0, total_chunks_count, EMBED_BATCH_SIZE):
+                embed_batch = all_splits[i: i + EMBED_BATCH_SIZE]
+                await process_batch(batch=embed_batch)
+                total_embedded_chunks += len(embed_batch)
 
-            for start_page in range(0, total_pages, PAGE_BATCH_SIZE):
-                end_page = min(start_page + PAGE_BATCH_SIZE, total_pages)
-                logger.info(f"Reading page batch range={start_page + 1}-{end_page} of {total_pages}")
-
-                batch_docs = await get_page_batch_documents(
-                    reader=reader,
-                    filename=filename,
-                    start_page=start_page,
-                    end_page=end_page,
-                    previous_overlap_doc=previous_overlap_doc
-                )
-
-                if not batch_docs:
-                    continue
-
-                # Split batch docs into correlated chunks
-                splits = text_splitter.split_documents(batch_docs)
-
-                # Save trailing overlap from this batch for the next batch boundary correlation
-                if splits:
-                    last_split = splits[-1]
-                    overlap_text = (
-                        last_split.page_content[-200:]
-                        if len(last_split.page_content) > 200
-                        else last_split.page_content
-                    )
-                    previous_overlap_doc = Document(
-                        page_content=overlap_text,
-                        metadata=last_split.metadata
-                    )
-
-                # Embed chunks in EMBED_BATCH_SIZE batches
-                for i in range(0, len(splits), EMBED_BATCH_SIZE):
-                    embed_batch = splits[i: i + EMBED_BATCH_SIZE]
-                    await process_batch(batch=embed_batch)
-                    total_embedded_chunks += len(embed_batch)
-
-                # Update progress based on completed pages
                 await update_progress(
                     db=db,
                     job_id=job.id,
-                    embedded_chunks=end_page,
-                    total_chunks=total_pages
+                    embedded_chunks=total_embedded_chunks,
+                    total_chunks=total_chunks_count
                 )
-                logger.info(f"Page batch {start_page + 1}-{end_page} embedded ({total_embedded_chunks} chunks total)")
+                logger.info(f"Embedded {total_embedded_chunks}/{total_chunks_count} chunks")
 
             await complete_job(db=db, job_id=job.id)
-            logger.info(f"File {filename} embedding has processed successfully ({total_embedded_chunks} chunks embedded)")
+            logger.info(f"File {filename} embedding processed successfully ({total_embedded_chunks} chunks embedded)")
         except Exception as e:
             logger.error(f"Embedding job failed: {e}")
-            await fail_job(db=db, job_id=job_id, error=str(e))
+            try:
+                await fail_job(db=db, job_id=job_id, error=str(e))
+            except Exception as fail_err:
+                logger.warning(f"Could not update failed state for job {job_id}: {fail_err}")
             raise e
 
 
